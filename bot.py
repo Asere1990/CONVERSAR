@@ -1,5 +1,6 @@
 import os
 import logging
+import telegram
 from html import escape
 from typing import Dict, Tuple, Optional
 
@@ -13,29 +14,32 @@ from telegram.ext import (
     filters,
 )
 
+# ====== LOGGING & VERSION ======
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
 log = logging.getLogger("relay-bot")
+print("PTB version:", telegram.__version__)  # Debe mostrar 20.3
 
-# === Variables de entorno requeridas ===
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_CHANNEL_ID = int(os.environ.get("ADMIN_CHANNEL_ID", "0"))  # ej. -1001234567890
-# Foto para /start: puede ser un file_id de Telegram o una URL directa (http/https)
-START_PHOTO = os.environ.get("START_PHOTO", "").strip()
+# ====== ENV VARS ======
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "0"))   # ej. -1001234567890
 
 if not BOT_TOKEN or not ADMIN_CHANNEL_ID:
-    raise SystemExit("Faltan BOT_TOKEN y/o ADMIN_CHANNEL_ID.")
+    raise SystemExit("Faltan variables de entorno: BOT_TOKEN y/o ADMIN_CHANNEL_ID.")
 
-# Mapa: message_id_en_canal -> (user_id, user_message_id)
+# Mapa EN MEMORIA: message_id (en el canal) -> (user_id, user_message_id)
 LINK_MAP: Dict[int, Tuple[int, int]] = {}
 
 
+# ====== HELPERS ======
 def identity_block(msg: Message) -> str:
+    """Bloque con identidad del remitente para publicar en el canal."""
     u = msg.from_user
     mention = f'<a href="tg://user?id={u.id}">{escape(u.full_name or "Usuario")}</a>'
     username = f"@{escape(u.username)}" if u.username else "—"
+
     lines = [
         "📥 <b>NUEVO MENSAJE</b>",
         f"👤 <b>Nombre:</b> {mention}",
@@ -49,56 +53,45 @@ def identity_block(msg: Message) -> str:
     return "\n".join(lines)
 
 
+# ====== HANDLERS ======
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Responde a /start con un mensaje personalizado."""
     user = update.effective_user
     nombre = user.full_name or "amigo"
     caption = f"𝐃𝐈𝐌𝐄 {nombre} ¿𝐂𝐔𝐀𝐋 𝐄𝐒 𝐓𝐔 𝐐𝐔𝐄𝐉𝐀?"
-
-    # Si definiste START_PHOTO (file_id o URL), enviamos foto con el caption.
-    if START_PHOTO:
-        try:
-            await update.effective_message.reply_photo(
-                photo=START_PHOTO,
-                caption=caption,
-            )
-            return
-        except Exception:
-            log.exception("No se pudo enviar la foto de /start; envío texto como respaldo.")
-
-    # Respaldo si no hay START_PHOTO o falló el envío de la imagen
     await update.effective_message.reply_text(caption)
 
 
 async def relay_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     1) Publica bloque de identidad en el canal.
-    2) Copia el mensaje del usuario al canal.
-    3) Guarda el vínculo (mensaje en canal) -> (user_id, user_message_id).
+    2) Copia el contenido del usuario al canal.
+    3) Guarda el vínculo: mensaje_en_canal -> (user_id, user_message_id).
     """
     msg = update.effective_message
 
     # 1) Identidad
     try:
         await context.bot.send_message(
-            ADMIN_CHANNEL_ID,
-            identity_block(msg),
+            chat_id=ADMIN_CHANNEL_ID,
+            text=identity_block(msg),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
     except Exception:
         log.exception("Error enviando identidad al canal")
 
-    # 2) Copiar contenido del usuario al canal
+    # 2) Copiar el mensaje al canal
     try:
         copied: Message = await msg.copy(chat_id=ADMIN_CHANNEL_ID)
-        # 3) Enlazar: el mensaje copiado en el canal apunta al autor original
+        # 3) Enlazar el message_id en el canal con el usuario original
         LINK_MAP[copied.message_id] = (msg.from_user.id, msg.message_id)
     except Exception:
         log.exception("No se pudo copiar el mensaje al canal")
         try:
             await context.bot.send_message(
-                ADMIN_CHANNEL_ID,
-                "(No se pudo copiar el contenido; arriba está la identidad).",
+                chat_id=ADMIN_CHANNEL_ID,
+                text="(No se pudo copiar el contenido; arriba está la identidad).",
             )
         except Exception:
             pass
@@ -106,33 +99,32 @@ async def relay_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reply_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Si alguien responde en el canal (reply) a un mensaje copiado,
+    Si alguien responde (reply) en el canal a un mensaje copiado,
     reenviamos esa respuesta al chat del usuario correcto.
     """
     admin_msg = update.effective_message
     ref: Optional[Message] = admin_msg.reply_to_message
-
     if not ref:
         return  # sólo actuamos en respuestas
 
     link = LINK_MAP.get(ref.message_id)
     if not link:
-        return  # no tenemos ese vínculo (pudo reiniciarse el bot)
+        return  # el bot se reinició o no hay registro para ese mensaje
 
     user_id, user_msg_id = link
 
     try:
-        # Si el admin envía medios, copialos
+        # Si el admin envía medios o caption, copiamos directamente
         if admin_msg.effective_attachment or admin_msg.caption:
             await admin_msg.copy(
                 chat_id=user_id,
-                reply_to_message_id=user_msg_id,  # mantiene hilo en el chat del usuario
+                reply_to_message_id=user_msg_id,  # mantiene el hilo en el chat del usuario
             )
         elif admin_msg.text:
+            # Reenviar texto tal cual (sin modificar formato)
             await context.bot.send_message(
                 chat_id=user_id,
-                text=admin_msg.text_html or admin_msg.text,
-                parse_mode=ParseMode.HTML if admin_msg.text_html else None,
+                text=admin_msg.text,
                 reply_to_message_id=user_msg_id,
             )
         else:
@@ -148,29 +140,29 @@ async def reply_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # /start
+    # /start (privado con usuarios)
     app.add_handler(CommandHandler("start", cmd_start))
 
-    # Usuarios hablando al bot (privado o donde esté el bot)
+    # Respuestas en el CANAL de admin -> al usuario correcto
     app.add_handler(
         MessageHandler(
-            filters.ALL & ~filters.StatusUpdate.ALL,
-            relay_to_channel,
-        )
-    )
-
-    # Respuestas en el canal de admin → al usuario correcto
-    app.add_handler(
-        MessageHandler(
-            filters.Chat(chat_id=ADMIN_CHANNEL_ID)
-            & filters.REPLY
-            & ~filters.StatusUpdate.ALL,
+            filters.Chat(chat_id=ADMIN_CHANNEL_ID) & filters.REPLY & ~filters.StatusUpdate.ALL,
             reply_from_channel,
-        )
+        ),
+        group=0,
     )
 
-    log.info("Bot listo.")
-    app.run_polling(allowed_updates=["message"])
+    # Cualquier mensaje que reciba el bot (de usuarios) -> al canal
+    app.add_handler(
+        MessageHandler(
+            ~filters.Chat(chat_id=ADMIN_CHANNEL_ID) & filters.ALL & ~filters.StatusUpdate.ALL,
+            relay_to_channel,
+        ),
+        group=1,
+    )
+
+    log.info("Bot listo. Escuchando…")
+    app.run_polling(allowed_updates=["message", "channel_post"])
 
 
 if __name__ == "__main__":
