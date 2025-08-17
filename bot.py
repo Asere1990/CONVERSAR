@@ -58,7 +58,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Responde a /start con un mensaje personalizado."""
     user = update.effective_user
     nombre = user.full_name or "amigo"
-    caption = f"𝐃𝐈𝐌𝐄 {nombre} ¿𝐂𝐔𝐀𝐋 𝐄𝐒 𝐓𝐔 𝐐𝐔𝐄𝐉𝐀?"
+    caption = f"𝐃𝐈𝐌𝐄 {nombre} ¿𝐂𝐔𝐀𝐋 𝐄𝐒 𝐓𝐔 𝐃𝐎𝐋𝐎𝐑?"
     await update.effective_message.reply_text(caption)
 
 
@@ -101,6 +101,7 @@ async def reply_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """
     Si alguien responde (reply) en el canal a un mensaje copiado,
     reenviamos esa respuesta al chat del usuario correcto.
+    En esta versión, el mensaje al usuario se envía NORMAL (sin reply).
     """
     admin_msg = update.effective_message
     ref: Optional[Message] = admin_msg.reply_to_message
@@ -111,27 +112,19 @@ async def reply_from_channel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not link:
         return  # el bot se reinició o no hay registro para ese mensaje
 
-    user_id, user_msg_id = link
+    user_id, user_msg_id = link  # user_msg_id ya no se usa para reply
 
     try:
-        # Si el admin envía medios o caption, copiamos directamente
+        # Si el admin envía medios o caption, copiamos directamente (SIN reply_to_message_id)
         if admin_msg.effective_attachment or admin_msg.caption:
-            await admin_msg.copy(
-                chat_id=user_id,
-                reply_to_message_id=user_msg_id,  # mantiene el hilo en el chat del usuario
-            )
+            await admin_msg.copy(chat_id=user_id)
         elif admin_msg.text:
-            # Reenviar texto tal cual (sin modificar formato)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=admin_msg.text,
-                reply_to_message_id=user_msg_id,
-            )
+            # Enviar texto tal cual (SIN reply)
+            await context.bot.send_message(chat_id=user_id, text=admin_msg.text)
         else:
             await context.bot.send_message(
                 chat_id=user_id,
                 text="(Te enviaron un tipo de mensaje que no puedo reenviar aquí.)",
-                reply_to_message_id=user_msg_id,
             )
     except Exception:
         log.exception("Error reenviando respuesta al usuario")
