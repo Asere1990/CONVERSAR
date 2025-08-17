@@ -58,7 +58,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Responde a /start con un mensaje personalizado."""
     user = update.effective_user
     nombre = user.full_name or "amigo"
-    caption = f"𝐃𝐈𝐌𝐄 {nombre} ¿𝐂𝐔𝐀𝐋 𝐄𝐒 𝐓𝐔 𝐃𝐎𝐋𝐎𝐑?"
+    caption = f"𝐃𝐈𝐌𝐄 {nombre} ¿𝐂𝐔𝐀𝐋 𝐄𝐒 𝐓𝐔 𝐃𝐎𝐋𝐎𝐑 𝐀𝐉𝐄𝐑𝐄?"
     await update.effective_message.reply_text(caption)
 
 
